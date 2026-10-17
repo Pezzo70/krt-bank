@@ -2,41 +2,22 @@ namespace Domain.Entities;
 
 public abstract class Entity
 {
-    private readonly TimeProvider _timeProvider;
-
-    protected Entity(TimeProvider? timeProvider = null)
-    {
-        _timeProvider = timeProvider ?? TimeProvider.System;
-        CreatedAt = _timeProvider.GetUtcNow();
-    }
-
     public int InternalId { get; private set; }
-    public Guid Id { get; } = Guid.NewGuid();
+    public Guid Id { get; private set; } = Guid.NewGuid();
     public bool IsActive { get; private set; } = true;
-    public DateTimeOffset CreatedAt { get; }
+    public DateTimeOffset CreatedAt { get; private set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? UpdatedAt { get; private set; }
 
-    public void Activate()
+    public void SetActive(bool isActive)
     {
-        if (IsActive)
+        if (IsActive == isActive)
         {
             return;
         }
 
-        IsActive = true;
+        IsActive = isActive;
         MarkAsUpdated();
     }
 
-    public void Deactivate()
-    {
-        if (!IsActive)
-        {
-            return;
-        }
-
-        IsActive = false;
-        MarkAsUpdated();
-    }
-
-    protected void MarkAsUpdated() => UpdatedAt = _timeProvider.GetUtcNow();
+    protected void MarkAsUpdated() => UpdatedAt = DateTimeOffset.UtcNow;
 }
