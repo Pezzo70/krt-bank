@@ -1,0 +1,44 @@
+name: krt-bank
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-krt_bank}
+      POSTGRES_USER: ${POSTGRES_USER:-krt_bank}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}
+      TZ: UTC
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10", "-c", "timezone=UTC"]
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  readyset:
+    image: readysettech/readyset:stable-260924
+    environment:
+      UPSTREAM_DB_URL: postgres://${POSTGRES_USER:-krt_bank}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-krt_bank}
+      REPLICATION_TABLES: public.contas
+      CACHE_MODE: deep
+      QUERY_CACHING: explicit
+      LISTEN_ADDRESS: 0.0.0.0:5433
+      STORAGE_DIR: /data/cache
+      DEPLOYMENT: krt-bank
+      TZ: UTC
+    ports:
+      - "127.0.0.1:${READYSET_PORT:-5433}:5433"
+      - "127.0.0.1:${READYSET_METRICS_PORT:-6034}:6034"
+    volumes:
+      - readyset_data:/data/cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  readyset_data:
