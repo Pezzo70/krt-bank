@@ -1,15 +1,14 @@
+using Application.Configuration;
 using System.Diagnostics;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using Infra.Persistence;
-using Infra.Queries;
-using Infra.ReadySet;
+using Domain.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Hosting;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
@@ -43,7 +42,7 @@ public sealed class InfraFixture : IAsyncLifetime
             .WithEnvironment("UPSTREAM_DB_URL", "postgres://postgres:krt_bank_tests@postgres:5432/krt_bank_tests")
             .WithEnvironment("REPLICATION_TABLES", "public.accounts")
             .WithEnvironment("CACHE_MODE", "deep")
-            .WithEnvironment("QUERY_CACHING", "explicit")
+            .WithEnvironment("QUERY_CACHING", "in-request-path")
             .WithEnvironment("LISTEN_ADDRESS", "0.0.0.0:5433")
             .WithEnvironment("DEPLOYMENT", "krt-bank-tests")
             .WithEnvironment("STORAGE_DIR", "/data/cache")
@@ -66,21 +65,18 @@ public sealed class InfraFixture : IAsyncLifetime
     public BankDbContext CreateContext() => new(new DbContextOptionsBuilder<BankDbContext>()
         .UseNpgsql(PostgresConnectionString).Options);
 
-    public ReadySetCacheCommand AccountCache { get; private set; } = null!;
-
     public IConfiguration CreateConfiguration(string? readySetConnectionString = null)
     {
         return new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["ConnectionStrings:Postgres"] = PostgresConnectionString,
-            ["ConnectionStrings:ReadySet"] = readySetConnectionString ?? ReadySetConnectionString,
-            ["ReadySet:PsqlPath"] = Environment.GetEnvironmentVariable("ReadySet__PsqlPath") ?? "psql"
+            ["ConnectionStrings:ReadySet"] = readySetConnectionString ?? ReadySetConnectionString
         }).Build();
     }
 
     public ServiceProvider CreateProvider(string? readySetConnectionString = null)
     {
-        var services = new ServiceCollection().AddInfra(CreateConfiguration(readySetConnectionString));
+        var services = new ServiceCollection().AddApplication(CreateConfiguration(readySetConnectionString));
         services.Replace(ServiceDescriptor.Singleton(GetConnections(readySetConnectionString)));
         return services.BuildServiceProvider(
             new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
@@ -109,17 +105,28 @@ public sealed class InfraFixture : IAsyncLifetime
             }
 
             await _readySet.StartAsync();
-            var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true });
-            builder.Configuration.AddConfiguration(CreateConfiguration());
-            builder.Services.AddInfra(builder.Configuration);
-            builder.Services.Replace(ServiceDescriptor.Singleton(GetConnections()));
-            using var host = builder.Build();
-            await host.StartAsync();
-            await using var definitionContext = CreateContext();
-            AccountCache = host.Services.GetServices<ReadySetCacheDefinition>().Single().CreateCommand(definitionContext);
-            if (!(await ReadySetSqlAsync("SHOW CACHES;")).Contains($"|{AccountCache.Name}|"))
-                throw new InvalidOperationException("The host did not register the ReadySet account cache.");
-            await host.StopAsync();
+            await EventuallyAsync(async () =>
+            {
+                try
+                {
+                    return (await ReadySetSqlAsync("SHOW READYSET STATUS;"))
+                        .Contains("Replication Status|Running");
+                }
+                catch (InvalidOperationException)
+                {
+                    return false;
+                }
+            }, TimeSpan.FromSeconds(120));
+
+            if (!string.IsNullOrWhiteSpace(await ReadySetSqlAsync("SHOW CACHES;")))
+                throw new InvalidOperationException("The fresh ReadySet container already has caches.");
+
+            await using var provider = CreateProvider();
+            await using var scope = provider.CreateAsyncScope();
+            var repository = scope.ServiceProvider.GetRequiredService<IAccountRepository>();
+            await repository.GetByIdAsync(Guid.Empty);
+            if (!(await ReadySetSqlAsync("SHOW CACHES;")).Contains("|deep, autoparam on|"))
+                throw new InvalidOperationException("ReadySet did not automatically create the deep cache.");
         }
         catch
         {

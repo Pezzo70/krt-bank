@@ -1,0 +1,26 @@
+@host = http://localhost:5080
+@accountId = 00000000-0000-0000-0000-000000000000
+
+### Create an account (fictitious test CPF)
+POST {{host}}/api/accounts
+Content-Type: application/json
+
+{
+  "name": "Example account",
+  "cpf": "287.841.420-90"
+}
+
+### Read an account; replace accountId with the ID returned by POST
+GET {{host}}/api/accounts/{{accountId}}
+
+### Update an account
+PUT {{host}}/api/accounts/{{accountId}}
+Content-Type: application/json
+
+{
+  "name": "Updated account",
+  "cpf": "28784142090"
+}
+
+### Soft delete an account
+DELETE {{host}}/api/accounts/{{accountId}}

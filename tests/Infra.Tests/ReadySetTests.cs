@@ -1,6 +1,6 @@
 using Domain.Interfaces;
 using Infra.Persistence;
-using Infra.Queries;
+using Infra.Repositories;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -22,7 +22,7 @@ public sealed class ReadySetTests(InfraFixture fixture) : IAsyncLifetime
         var account = PersistenceTests.NewAccount();
         scope.ServiceProvider.GetRequiredService<IAccountRepository>().Add(account);
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().CommitAsync();
-        var queries = scope.ServiceProvider.GetRequiredService<IAccountQueries>();
+        var queries = scope.ServiceProvider.GetRequiredService<IAccountRepository>();
         await InfraFixture.EventuallyAsync(async () => (await queries.GetByIdAsync(account.Id))?.Name == account.Name);
 
         // Disable the origin to prove the EF reader receives results from ReadySet.
@@ -35,7 +35,7 @@ public sealed class ReadySetTests(InfraFixture fixture) : IAsyncLifetime
             .UseNpgsql(sources.ReadySet).Options);
         await using var origin = new BankDbContext(new DbContextOptionsBuilder<BankDbContext>()
             .UseNpgsql(sources.Postgres).Options);
-        var reader = new AccountQueries(cache, origin, NullLogger<AccountQueries>.Instance);
+        var reader = new AccountRepository(origin, cache, NullLogger<AccountRepository>.Instance);
         var cached = await reader.GetByIdAsync(account.Id);
         Assert.NotNull(cached);
         Assert.Equal(account.Id, cached.Id);
@@ -43,9 +43,8 @@ public sealed class ReadySetTests(InfraFixture fixture) : IAsyncLifetime
         Assert.Equal(account.Cpf, cached.Cpf);
         Assert.Empty(cache.ChangeTracker.Entries());
 
-        var result = await fixture.ReadySetSqlAsync(
-            fixture.AccountCache.Query.Replace("$1", $"'{account.Id:D}'"), "EXPLAIN LAST STATEMENT");
-        Assert.Contains($"readyset({fixture.AccountCache.Name})|ok", result);
+        var caches = await fixture.ReadySetSqlAsync("SHOW CACHES;");
+        Assert.Contains("|deep, autoparam on|", caches);
     }
 
     [Fact]
@@ -56,7 +55,7 @@ public sealed class ReadySetTests(InfraFixture fixture) : IAsyncLifetime
         var account = PersistenceTests.NewAccount();
         var repository = scope.ServiceProvider.GetRequiredService<IAccountRepository>();
         var unit = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-        var queries = scope.ServiceProvider.GetRequiredService<IAccountQueries>();
+        var queries = scope.ServiceProvider.GetRequiredService<IAccountRepository>();
         repository.Add(account);
         await unit.CommitAsync();
         await InfraFixture.EventuallyAsync(async () => await queries.GetByIdAsync(account.Id) is not null);
@@ -83,7 +82,7 @@ public sealed class ReadySetTests(InfraFixture fixture) : IAsyncLifetime
         scope.ServiceProvider.GetRequiredService<IAccountRepository>().Add(account);
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().CommitAsync();
 
-        var result = await scope.ServiceProvider.GetRequiredService<IAccountQueries>().GetByIdAsync(account.Id);
+        var result = await scope.ServiceProvider.GetRequiredService<IAccountRepository>().GetByIdAsync(account.Id);
         Assert.NotNull(result);
         Assert.Equal(account.Name, result.Name);
         Assert.Equal(account.Cpf, result.Cpf);
@@ -104,8 +103,15 @@ public sealed class ReadySetTests(InfraFixture fixture) : IAsyncLifetime
             var account = PersistenceTests.NewAccount();
             scope.ServiceProvider.GetRequiredService<IAccountRepository>().Add(account);
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().CommitAsync();
-            Assert.NotNull(await scope.ServiceProvider.GetRequiredService<IAccountRepository>().GetByIdAsync(account.Id));
-            Assert.Null(await scope.ServiceProvider.GetRequiredService<IAccountQueries>().GetByIdAsync(account.Id));
+            Assert.NotNull(await scope.ServiceProvider.GetRequiredService<IAccountRepository>().GetByIdAsync(account.Id, cacheable: false));
+            Assert.Null(await scope.ServiceProvider.GetRequiredService<IAccountRepository>().GetByIdAsync(account.Id));
+
+            var updated = await scope.ServiceProvider.GetRequiredService<IAccountService>()
+                .UpdateAsync(account.Id, "Updated while replication is stopped", account.Cpf.Value);
+            Assert.True(updated.IsSuccess);
+            await using var verification = fixture.CreateContext();
+            Assert.Equal("Updated while replication is stopped",
+                (await verification.Accounts.SingleAsync()).Name);
         }
         finally
         {

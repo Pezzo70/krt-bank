@@ -49,7 +49,7 @@ public sealed class UnitOfWork(BankDbContext context, IOutboxMessageFactory mess
                 if (entry.Entity is OutboxMessage) continue;
 
                 context.OutboxMessages.Add(
-                    messageFactory.Create(entry.Entity, entry.Metadata.ClrType, operation));
+                    messageFactory.Create(entry.Entity, operation));
             }
 
             await context.SaveChangesAsync(cancellationToken);

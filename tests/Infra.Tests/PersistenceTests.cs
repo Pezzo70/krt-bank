@@ -44,7 +44,11 @@ public sealed class PersistenceTests(InfraFixture fixture) : IAsyncLifetime
         Assert.Null(message.PublishedAt);
         using var json = JsonDocument.Parse(message.Payload);
         Assert.Equal(account.Id, json.RootElement.GetProperty("accountId").GetGuid());
+        Assert.Equal(account.Name, json.RootElement.GetProperty("name").GetString());
         Assert.Equal(account.Cpf.Value, json.RootElement.GetProperty("cpf").GetString());
+        Assert.True(json.RootElement.GetProperty("isActive").GetBoolean());
+        Assert.Equal(account.CreatedAt, json.RootElement.GetProperty("createdAt").GetDateTimeOffset());
+        Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("updatedAt").ValueKind);
         Assert.False(json.RootElement.TryGetProperty("internalId", out _));
     }
 
@@ -89,7 +93,7 @@ public sealed class PersistenceTests(InfraFixture fixture) : IAsyncLifetime
             await unit.CommitAsync();
             repository.Remove(account);
             await unit.CommitAsync();
-            Assert.Null(await repository.GetByIdAsync(account.Id));
+            Assert.Null(await repository.GetByIdAsync(account.Id, cacheable: false));
         }
 
         await using (var scope = provider.CreateAsyncScope())

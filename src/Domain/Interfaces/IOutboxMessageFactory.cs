@@ -4,5 +4,5 @@ namespace Domain.Interfaces;
 
 public interface IOutboxMessageFactory
 {
-    OutboxMessage Create(Entity entity, Type entityType, string operation);
+    OutboxMessage Create(Entity entity, string operation);
 }
