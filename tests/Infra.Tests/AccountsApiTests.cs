@@ -145,7 +145,8 @@ public sealed class AccountsApiTests(InfraFixture fixture) : IAsyncLifetime
         using var conflict = await client.PutAsJsonAsync(second.Headers.Location, new { name = "Changed", cpf = "28784142090" });
         Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
         await using var context = fixture.CreateContext();
-        Assert.Equal("08782758000", (await context.Accounts.SingleAsync(account => account.Name == "Second")).Cpf.Value);
+        var secondName = AccountName.Create("Second").Value;
+        Assert.Equal("08782758000", (await context.Accounts.SingleAsync(account => account.Name == secondName)).Cpf.Value);
         Assert.Equal(2, await context.OutboxMessages.CountAsync());
     }
 
@@ -206,7 +207,6 @@ public sealed class AccountsApiTests(InfraFixture fixture) : IAsyncLifetime
         {
             builder.ConfigureTestServices(services =>
             {
-                services.Replace(ServiceDescriptor.Singleton(fixture.GetConnections()));
                 configure?.Invoke(services);
             });
         }

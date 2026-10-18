@@ -1,8 +1,8 @@
 using Domain.Entities;
+using Domain.Errors;
 using Domain.Interfaces;
 using Domain.ValueObjects;
 using FluentResults;
-using Service.Errors;
 
 namespace Service;
 
@@ -27,8 +27,8 @@ public sealed class AccountService(
 
         var account = new Account { Name = input.Value.Name, Cpf = input.Value.Cpf };
         repository.Add(account);
-        await unitOfWork.CommitAsync(cancellationToken);
-        return Result.Ok(account);
+        var commit = await unitOfWork.CommitAsync(cancellationToken);
+        return commit.IsFailed ? Result.Fail<Account>(commit.Errors) : Result.Ok(account);
     }
 
     public async Task<Result<Account>> GetByIdAsync(
@@ -61,8 +61,8 @@ public sealed class AccountService(
 
         account.Name = input.Value.Name;
         account.Cpf = input.Value.Cpf;
-        await unitOfWork.CommitAsync(cancellationToken);
-        return Result.Ok(account);
+        var commit = await unitOfWork.CommitAsync(cancellationToken);
+        return commit.IsFailed ? Result.Fail<Account>(commit.Errors) : Result.Ok(account);
     }
 
     public async Task<Result> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
@@ -71,21 +71,22 @@ public sealed class AccountService(
         if (account is null)
             return Result.Fail(new NotFoundError("Account was not found."));
         repository.Remove(account);
-        await unitOfWork.CommitAsync(cancellationToken);
-        return Result.Ok();
+        return await unitOfWork.CommitAsync(cancellationToken);
     }
 
-    private static Result<(string Name, Cpf Cpf)> Validate(string? name, string? cpf)
+    private static Result<(AccountName Name, Cpf Cpf)> Validate(string? name, string? cpf)
     {
         var errors = new List<IError>();
-        if (string.IsNullOrWhiteSpace(name))
-            errors.Add(new ValidationError("name", "Account name is required."));
+        var validatedName = AccountName.Create(name);
+        errors.AddRange(
+            validatedName.Errors.Select(error => new ValidationError("name", error.Message))
+        );
         var validatedCpf = Cpf.Create(cpf);
         errors.AddRange(
             validatedCpf.Errors.Select(error => new ValidationError("cpf", error.Message))
         );
         return errors.Count > 0
-            ? Result.Fail<(string Name, Cpf Cpf)>(errors)
-            : Result.Ok((Name: name!.Trim(), Cpf: validatedCpf.Value));
+            ? Result.Fail<(AccountName Name, Cpf Cpf)>(errors)
+            : Result.Ok((Name: validatedName.Value, Cpf: validatedCpf.Value));
     }
 }

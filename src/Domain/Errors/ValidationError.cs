@@ -1,6 +1,6 @@
 using FluentResults;
 
-namespace Service.Errors;
+namespace Domain.Errors;
 
 public sealed class ValidationError(string field, string message) : Error(message)
 {

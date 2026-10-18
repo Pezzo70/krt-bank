@@ -1,11 +1,11 @@
 using System.Text.Json;
 using Domain.Entities;
+using Domain.Errors;
 using Domain.Interfaces;
 using Domain.ValueObjects;
 using Infra.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Npgsql;
 
 namespace Infra.Tests;
 
@@ -44,7 +44,7 @@ public sealed class PersistenceTests(InfraFixture fixture) : IAsyncLifetime
         Assert.Null(message.PublishedAt);
         using var json = JsonDocument.Parse(message.Payload);
         Assert.Equal(account.Id, json.RootElement.GetProperty("accountId").GetGuid());
-        Assert.Equal(account.Name, json.RootElement.GetProperty("name").GetString());
+        Assert.Equal(account.Name.Value, json.RootElement.GetProperty("name").GetString());
         Assert.Equal(account.Cpf.Value, json.RootElement.GetProperty("cpf").GetString());
         Assert.True(json.RootElement.GetProperty("isActive").GetBoolean());
         Assert.Equal(account.CreatedAt, json.RootElement.GetProperty("createdAt").GetDateTimeOffset());
@@ -63,7 +63,7 @@ public sealed class PersistenceTests(InfraFixture fixture) : IAsyncLifetime
         repository.Add(account);
         await unit.CommitAsync();
 
-        account.Name = "Account updated";
+        account.Name = AccountName.Create("Account updated").Value;
         await unit.CommitAsync();
         var updatedAt = account.UpdatedAt;
         Assert.NotNull(updatedAt);
@@ -72,7 +72,7 @@ public sealed class PersistenceTests(InfraFixture fixture) : IAsyncLifetime
         await using var context = fixture.CreateContext();
         Assert.Equal(2, await context.OutboxMessages.CountAsync());
         var persisted = await context.Accounts.SingleAsync();
-        Assert.Equal("Account updated", persisted.Name);
+        Assert.Equal("Account updated", persisted.Name.Value);
         Assert.Equal(updatedAt!.Value.ToUnixTimeMilliseconds(), persisted.UpdatedAt!.Value.ToUnixTimeMilliseconds());
         Assert.Equal(account.CreatedAt.ToUnixTimeMilliseconds(), persisted.CreatedAt.ToUnixTimeMilliseconds());
         Assert.Equal(1, await context.OutboxMessages.CountAsync(x => x.Type == "account.updated"));
@@ -90,18 +90,22 @@ public sealed class PersistenceTests(InfraFixture fixture) : IAsyncLifetime
             repository.Add(account);
             await unit.CommitAsync();
             repository.Remove(account);
+            Assert.Null(account.UpdatedAt);
             await unit.CommitAsync();
+            var deletedAt = account.UpdatedAt;
+            Assert.NotNull(deletedAt);
             repository.Remove(account);
             await unit.CommitAsync();
+            Assert.Equal(deletedAt, account.UpdatedAt);
             Assert.Null(await repository.GetByIdAsync(account.Id, cacheable: false));
         }
 
         await using (var scope = provider.CreateAsyncScope())
         {
             scope.ServiceProvider.GetRequiredService<IAccountRepository>().Add(NewAccount());
-            var exception = await Assert.ThrowsAsync<DbUpdateException>(() =>
-                scope.ServiceProvider.GetRequiredService<IUnitOfWork>().CommitAsync());
-            Assert.Equal(PostgresErrorCodes.UniqueViolation, Assert.IsType<PostgresException>(exception.InnerException).SqlState);
+            var result = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().CommitAsync();
+            Assert.True(result.IsFailed);
+            Assert.IsType<ConflictError>(Assert.Single(result.Errors));
         }
 
         await using var context = fixture.CreateContext();
@@ -123,7 +127,9 @@ public sealed class PersistenceTests(InfraFixture fixture) : IAsyncLifetime
             await unit.CommitAsync();
             repository.Add(NewAccount("08782758000"));
             repository.Add(NewAccount());
-            await Assert.ThrowsAsync<DbUpdateException>(() => unit.CommitAsync());
+            var failed = await unit.CommitAsync();
+            Assert.True(failed.IsFailed);
+            Assert.IsType<ConflictError>(Assert.Single(failed.Errors));
             await Assert.ThrowsAsync<InvalidOperationException>(() => unit.CommitAsync());
         }
 
@@ -142,14 +148,14 @@ public sealed class PersistenceTests(InfraFixture fixture) : IAsyncLifetime
         var account = NewAccount();
         context.Accounts.Add(account);
         await unit.CommitAsync();
-        account.Name = "Name at closure";
+        account.Name = AccountName.Create("Name at closure").Value;
         context.Accounts.Remove(account);
         await unit.CommitAsync();
 
         await using var verification = fixture.CreateContext();
         var persisted = await verification.Accounts.IgnoreQueryFilters().SingleAsync();
         Assert.False(persisted.IsActive);
-        Assert.Equal("Name at closure", persisted.Name);
+        Assert.Equal("Name at closure", persisted.Name.Value);
         Assert.Equal(1, await verification.OutboxMessages.CountAsync(x => x.Type == "account.deleted"));
     }
 
@@ -203,7 +209,7 @@ public sealed class PersistenceTests(InfraFixture fixture) : IAsyncLifetime
 
     internal static Account NewAccount(string cpf = "28784142090") => new()
     {
-        Name = "Integration account",
+        Name = AccountName.Create("Integration account").Value,
         Cpf = Cpf.Create(cpf).Value
     };
 }

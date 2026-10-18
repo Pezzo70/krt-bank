@@ -6,9 +6,9 @@
 
 - `Domain`: Account, Entity, CPF value object, Outbox message and all service, repository and Unit of Work interfaces.
 - `Application`: ASP.NET Core Web API with Controllers, HTTP contracts, error responses and all dependency injection registrations.
-- `Service`: account use cases and input validation; references only Domain.
-- `Infra`: EF contexts, migrations, repositories, Unit of Work, Outbox serialization/persistence and ReadySet queries.
-- `Domain.Tests`: existing CPF unit tests.
+- `Service`: account use cases, input validation and simulated Outbox processing; references only Domain.
+- `Infra`: EF contexts, migrations, repositories, Unit of Work, Outbox persistence and ReadySet queries.
+- `Domain.Tests`: CPF and account name value object unit tests.
 - `Infra.Tests`: integration tests against disposable PostgreSQL and ReadySet containers, including HTTP tests of the actual API and service flow.
 
 ## Local setup
@@ -29,7 +29,7 @@ set +a
 dotnet tool restore
 dotnet restore KrtBanking.sln
 docker compose up -d --wait postgres
-dotnet ef database update --context BankDbContext --project src/Infra --startup-project src/Infra
+dotnet ef database update --context BankDbContext --project src/Infra --startup-project src/Application
 docker compose up -d readyset
 dotnet run --project src/Application
 ```
@@ -46,7 +46,7 @@ The account rename migration preserves existing rows and identifiers by renaming
 
 Dependency direction: Application references Service and Infra; Service references only Domain; Infra references only Domain. `AccountService` implements `Domain.Interfaces.IAccountService` and depends on domain repository and Unit of Work contracts, without EF or HTTP dependencies. All custom interfaces live in `Domain/Interfaces`; implementations stay in their respective layers.
 
-Both `ConnectionStrings:Postgres` and `ConnectionStrings:ReadySet` are required. Environment variable equivalents are included in `.env.example`. Repository, primary context, account service and Unit of Work share the HTTP request scope. Migrations remain an explicit setup step.
+Both `ConnectionStrings:Postgres` and `ConnectionStrings:ReadySet` are required. Contexts receive their connection strings directly through DI; Npgsql manages connection pooling without a custom connection wrapper. Environment variable equivalents are included in `.env.example`. Repository, primary context, account service and Unit of Work share the HTTP request scope. Migrations remain an explicit setup step. EF tools use Application as the startup project to resolve the context through DI; no design-time context factory is needed.
 
 ### Account endpoints
 
@@ -66,11 +66,11 @@ Create and update accept:
 }
 ```
 
-The name is required and trimmed. The service validates CPF using `Cpf.Create()` and uses FluentResults for expected validation, not-found and conflict outcomes. CPF uniqueness includes inactive accounts. Updates only check for a duplicate CPF when it differs from the loaded account's CPF. The database constraint remains the final concurrency safeguard; duplicate writes return 409 even if the pre-check races.
+`Account.Name` is an immutable `AccountName` value object. `AccountName.Create()` rejects blank names and trims surrounding whitespace using `Result`, without validation exceptions. The service returns invalid input as HTTP 400. EF stores the value as text; HTTP responses and Outbox payloads expose it as a string. The service validates CPF using `Cpf.Create()` and uses FluentResults for expected validation, not-found and conflict outcomes. CPF uniqueness includes inactive accounts. Updates only check for a duplicate CPF when it differs from the loaded account's CPF. The database constraint remains the final concurrency safeguard; duplicate writes return 409 even if the pre-check races.
 
 HTTP responses contain `id`, `name`, normalized `cpf` as a string, `isActive`, `createdAt` and `updatedAt`. `InternalId` remains private to persistence. `AccountResponse` is an HTTP contract; the repository still returns the Account entity directly.
 
-Errors use Problem Details, including field errors for validation. Unexpected exceptions use the framework's built-in generic 500 response. Only CPF uniqueness violations on create/update are handled locally by the Controller as 409 conflicts. HTTP responses do not expose exception internals. Edit requests are available in `src/Application/Application.http`.
+Errors use Problem Details, including field errors for validation. Validation, not-found and conflict errors are typed FluentResults errors defined in `Domain/Errors`. Unexpected exceptions use the framework's built-in generic 500 response. Unit of Work translates the PostgreSQL CPF unique-constraint violation into `ConflictError`; Service propagates the failed result and the Controller maps it to HTTP 409 without depending on EF or PostgreSQL. HTTP responses do not expose exception internals. Edit requests are available in `src/Application/Application.http`.
 
 GET uses ReadySet and is eventually consistent: immediately after POST, PUT or DELETE, a GET may briefly reflect the previous state. Create/update responses come from the primary write. Updates and deletion load the tracked entity from PostgreSQL.
 
@@ -79,16 +79,16 @@ GET uses ReadySet and is eventually consistent: immediately after POST, PUT or D
 - `InternalId`: PostgreSQL-generated integer primary key.
 - `Id`: domain GUID with a unique index.
 - Normalized CPF: required, unique across active and inactive accounts.
-- Timestamps: UTC (`timestamptz`); updates set `UpdatedAt` on commit.
+- Timestamps: UTC (`timestamptz`); only Unit of Work sets `UpdatedAt`, on commit. Changing `IsActive` does not set a timestamp before persistence.
 - `Remove(account)`: soft deletion. The row and CPF remain reserved; normal queries hide inactive accounts.
 
-Repositories stage changes. Business writes go through `IUnitOfWork.CommitAsync()`, which inspects tracked entities in one loop and saves changes and Outbox messages in one transaction. After failure, discard the Unit of Work and context; reuse is rejected.
+Repositories stage changes. Business writes go through `IUnitOfWork.CommitAsync()`, which returns `Result`, inspects tracked entities in one loop and saves changes and Outbox messages in one transaction. After failure, discard the Unit of Work and context; reuse is rejected.
 
-New events are `account.created`, `account.updated` and `account.deleted`. A commit without changes creates no messages. The Outbox message and factory interface are defined in Domain. `OutboxMessageFactory` in Infra builds the account payload directly as an anonymous object and serializes only the public event fields. There is no separate payload class or mapper registration. Infra also implements EF mapping and transactional persistence.
+New events are `account.created`, `account.updated` and `account.deleted`. A commit without changes creates no messages. `OutboxMessage(account, operation)` in Domain builds and serializes the public account event fields. Unit of Work adds the message and saves it with the account in one transaction. There is no separate factory, factory interface, payload class or mapper registration. EF mappings are centralized in `BankDbContext.ConfigureModel()`, shared by the primary and ReadySet contexts. Unit of Work and repository implementations remain separate.
 
 `OutboxMessage` inherits `Entity`, using its `Id`, `InternalId`, `IsActive`, `CreatedAt` and `UpdatedAt`. The migration renames `event_id` to `id` and `occurred_at` to `created_at`, preserving existing identifiers and timestamps and keeping existing messages active. `outbox_messages` also stores `entity_id`, `type`, JSON `payload` and `published_at`. Account payload fields are `accountId`, `name`, `cpf`, `isActive`, `createdAt` and `updatedAt`; `InternalId` is excluded.
 
-Changes to Outbox messages do not generate further Outbox messages. `published_at` remains null until a future publisher is implemented. Operations that bypass EF change tracking also bypass Outbox creation.
+Changes to Outbox messages do not generate further Outbox messages. `OutboxWorker` runs inside the API and checks active messages with null `published_at` immediately on startup and then every 5 seconds, processing up to 100 per batch. The worker only schedules calls to `IOutboxService.ProcessPendingAsync()` and logs the processed count. `OutboxService` obtains tracked pending messages through `IOutboxRepository`, sets `PublishedAt` to simulate publication and commits through Unit of Work, which also updates `UpdatedAt`. `OutboxRepository` in Infra owns the EF query against PostgreSQL; the worker and Service have no direct DbContext access. Published and inactive messages are skipped; failed processing leaves messages pending for another attempt. This is a local simulation with no broker or delivery to other systems, intended for one API instance. Operations that bypass EF change tracking also bypass Outbox creation.
 
 ## ReadySet and Entity Framework Core
 
@@ -139,7 +139,7 @@ dotnet test KrtBanking.sln
 
 Integration tests start isolated PostgreSQL and ReadySet containers, apply migrations and remove containers on completion. They never use the `.env` database. Only Docker must be accessible to the test process; no host installation of `psql` is needed. Tests use the same native automatic deep-cache configuration as Compose.
 
-Coverage includes HTTP CRUD, validation, CPF conflicts (including concurrent requests), response contracts, error responses, identifiers, CPF and timestamp materialization, soft deletion, batch persistence, Outbox atomicity, unchanged commits, automatic deep-cache creation and parameter reuse, replication and fallback.
+Coverage includes HTTP CRUD, validation, CPF conflicts (including concurrent requests), response contracts, error responses, identifiers, CPF and timestamp materialization, soft deletion, batch persistence, Outbox atomicity, unchanged commits, automatic deep-cache creation and parameter reuse, replication, fallback and simulated Outbox processing.
 
 Domain tests only:
 

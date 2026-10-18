@@ -8,7 +8,6 @@ using Domain.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
@@ -22,7 +21,6 @@ public sealed class InfraFixture : IAsyncLifetime
     private readonly INetwork _network = new NetworkBuilder().Build();
     private readonly PostgreSqlContainer _postgres;
     private readonly IContainer _readySet;
-    private readonly Dictionary<string, DatabaseConnections> _connections = new();
 
     public InfraFixture()
     {
@@ -77,20 +75,8 @@ public sealed class InfraFixture : IAsyncLifetime
     public ServiceProvider CreateProvider(string? readySetConnectionString = null)
     {
         var services = new ServiceCollection().AddApplication(CreateConfiguration(readySetConnectionString));
-        services.Replace(ServiceDescriptor.Singleton(GetConnections(readySetConnectionString)));
         return services.BuildServiceProvider(
             new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
-    }
-
-    public DatabaseConnections GetConnections(string? readySetConnectionString = null)
-    {
-        var readySet = readySetConnectionString ?? ReadySetConnectionString;
-        if (!_connections.TryGetValue(readySet, out var connections))
-        {
-            connections = new DatabaseConnections(PostgresConnectionString, readySet);
-            _connections.Add(readySet, connections);
-        }
-        return connections;
     }
 
     public async Task InitializeAsync()
@@ -169,7 +155,6 @@ public sealed class InfraFixture : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        foreach (var connections in _connections.Values) await connections.DisposeAsync();
         await _readySet.DisposeAsync();
         await _postgres.DisposeAsync();
         await _network.DisposeAsync();

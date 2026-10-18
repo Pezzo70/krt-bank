@@ -1,5 +1,5 @@
 using FluentResults;
 
-namespace Service.Errors;
+namespace Domain.Errors;
 
 public sealed class ConflictError(string message) : Error(message);

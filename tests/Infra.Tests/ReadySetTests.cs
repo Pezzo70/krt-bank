@@ -1,4 +1,5 @@
 using Domain.Interfaces;
+using Domain.ValueObjects;
 using Infra.Persistence;
 using Infra.Repositories;
 using Microsoft.Extensions.DependencyInjection;
@@ -25,16 +26,15 @@ public sealed class ReadySetTests(InfraFixture fixture) : IAsyncLifetime
         var queries = scope.ServiceProvider.GetRequiredService<IAccountRepository>();
         await InfraFixture.EventuallyAsync(async () => (await queries.GetByIdAsync(account.Id))?.Name == account.Name);
 
-        // Disable the origin to prove the EF reader receives results from ReadySet.
+        // Disable the application fallback connection so this read must go through ReadySet.
         var unavailableOrigin = new NpgsqlConnectionStringBuilder(fixture.PostgresConnectionString)
         {
             Host = "127.0.0.1", Port = 1, Timeout = 1
         }.ConnectionString;
-        await using var sources = new DatabaseConnections(unavailableOrigin, fixture.ReadySetConnectionString);
         await using var cache = new ReadySetDbContext(new DbContextOptionsBuilder<ReadySetDbContext>()
-            .UseNpgsql(sources.ReadySet).Options);
+            .UseNpgsql(fixture.ReadySetConnectionString).Options);
         await using var origin = new BankDbContext(new DbContextOptionsBuilder<BankDbContext>()
-            .UseNpgsql(sources.Postgres).Options);
+            .UseNpgsql(unavailableOrigin).Options);
         var reader = new AccountRepository(origin, cache, NullLogger<AccountRepository>.Instance);
         var cached = await reader.GetByIdAsync(account.Id);
         Assert.NotNull(cached);
@@ -60,7 +60,7 @@ public sealed class ReadySetTests(InfraFixture fixture) : IAsyncLifetime
         await unit.CommitAsync();
         await InfraFixture.EventuallyAsync(async () => await queries.GetByIdAsync(account.Id) is not null);
 
-        account.Name = "Name updated in PostgreSQL";
+        account.Name = AccountName.Create("Name updated in PostgreSQL").Value;
         await unit.CommitAsync();
         await InfraFixture.EventuallyAsync(async () => (await queries.GetByIdAsync(account.Id))?.Name == account.Name);
 
@@ -111,7 +111,7 @@ public sealed class ReadySetTests(InfraFixture fixture) : IAsyncLifetime
             Assert.True(updated.IsSuccess);
             await using var verification = fixture.CreateContext();
             Assert.Equal("Updated while replication is stopped",
-                (await verification.Accounts.SingleAsync()).Name);
+                (await verification.Accounts.SingleAsync()).Name.Value);
         }
         finally
         {

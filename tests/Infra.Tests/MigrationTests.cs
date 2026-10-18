@@ -83,7 +83,7 @@ public sealed class MigrationTests
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.ApplyConfigurationsFromAssembly(typeof(BankDbContext).Assembly);
+            BankDbContext.ConfigureModel(modelBuilder);
             modelBuilder.Entity<Account>().ToTable("contas");
             modelBuilder.Entity<Account>().Property(x => x.Name).HasColumnName("nome");
             var outbox = modelBuilder.Entity<OutboxMessage>();

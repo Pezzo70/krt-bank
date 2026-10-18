@@ -8,5 +8,5 @@ public sealed class ReadySetDbContext(DbContextOptions<ReadySetDbContext> option
     public DbSet<Account> Accounts => Set<Account>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder) =>
-        modelBuilder.ApplyConfigurationsFromAssembly(typeof(BankDbContext).Assembly);
+        BankDbContext.ConfigureModel(modelBuilder);
 }

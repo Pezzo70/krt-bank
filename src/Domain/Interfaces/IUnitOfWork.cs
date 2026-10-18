@@ -1,6 +1,8 @@
+using FluentResults;
+
 namespace Domain.Interfaces;
 
 public interface IUnitOfWork
 {
-    Task CommitAsync(CancellationToken cancellationToken = default);
+    Task<Result> CommitAsync(CancellationToken cancellationToken = default);
 }

@@ -1,10 +1,8 @@
 using Application.Contracts;
 using Domain.Interfaces;
+using Domain.Errors;
 using FluentResults;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Npgsql;
-using Service.Errors;
 
 namespace Application.Controllers;
 
@@ -18,16 +16,9 @@ public sealed class AccountsController(IAccountService service) : ControllerBase
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<AccountResponse>> Create(AccountRequest request, CancellationToken cancellationToken)
     {
-        try
-        {
-            var result = await service.CreateAsync(request.Name, request.Cpf, cancellationToken);
-            if (result.IsFailed) return Failure(result.Errors);
-            return CreatedAtAction(nameof(GetById), new { id = result.Value.Id }, AccountResponse.From(result.Value));
-        }
-        catch (DbUpdateException exception) when (IsDuplicateCpf(exception))
-        {
-            return Problem(statusCode: StatusCodes.Status409Conflict, title: "CPF is already registered.");
-        }
+        var result = await service.CreateAsync(request.Name, request.Cpf, cancellationToken);
+        if (result.IsFailed) return Failure(result.Errors);
+        return CreatedAtAction(nameof(GetById), new { id = result.Value.Id }, AccountResponse.From(result.Value));
     }
 
     [HttpGet("{id:guid}")]
@@ -47,16 +38,9 @@ public sealed class AccountsController(IAccountService service) : ControllerBase
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<AccountResponse>> Update(Guid id, AccountRequest request, CancellationToken cancellationToken)
     {
-        try
-        {
-            var result = await service.UpdateAsync(id, request.Name, request.Cpf, cancellationToken);
-            if (result.IsFailed) return Failure(result.Errors);
-            return Ok(AccountResponse.From(result.Value));
-        }
-        catch (DbUpdateException exception) when (IsDuplicateCpf(exception))
-        {
-            return Problem(statusCode: StatusCodes.Status409Conflict, title: "CPF is already registered.");
-        }
+        var result = await service.UpdateAsync(id, request.Name, request.Cpf, cancellationToken);
+        if (result.IsFailed) return Failure(result.Errors);
+        return Ok(AccountResponse.From(result.Value));
     }
 
     [HttpDelete("{id:guid}")]
@@ -67,12 +51,6 @@ public sealed class AccountsController(IAccountService service) : ControllerBase
         var result = await service.DeleteAsync(id, cancellationToken);
         return result.IsFailed ? Failure(result.Errors) : NoContent();
     }
-
-    private static bool IsDuplicateCpf(DbUpdateException exception) =>
-        exception.InnerException is PostgresException
-        {
-            SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: "IX_accounts_cpf"
-        };
 
     private ActionResult Failure(IReadOnlyList<IError> errors)
     {

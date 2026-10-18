@@ -1,14 +1,17 @@
 using Domain.Entities;
+using Domain.Errors;
 using Domain.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using FluentResults;
+using Npgsql;
 
 namespace Infra.Persistence;
 
-public sealed class UnitOfWork(BankDbContext context, IOutboxMessageFactory messageFactory) : IUnitOfWork
+public sealed class UnitOfWork(BankDbContext context) : IUnitOfWork
 {
     private bool _failed;
 
-    public async Task CommitAsync(CancellationToken cancellationToken = default)
+    public async Task<Result> CommitAsync(CancellationToken cancellationToken = default)
     {
         if (_failed)
         {
@@ -17,7 +20,6 @@ public sealed class UnitOfWork(BankDbContext context, IOutboxMessageFactory mess
 
         try
         {
-            context.ChangeTracker.DetectChanges();
             var entries = context.ChangeTracker.Entries<Entity>()
                 .Where(entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
                 .ToList();
@@ -45,14 +47,21 @@ public sealed class UnitOfWork(BankDbContext context, IOutboxMessageFactory mess
                     entry.Property(x => x.UpdatedAt).CurrentValue = DateTimeOffset.UtcNow;
                 }
 
-                // Outbox persistence must not produce another Outbox notification.
-                if (entry.Entity is OutboxMessage) continue;
-
-                context.OutboxMessages.Add(
-                    messageFactory.Create(entry.Entity, operation));
+                if (entry.Entity is Account account)
+                    context.OutboxMessages.Add(new OutboxMessage(account, operation));
             }
 
             await context.SaveChangesAsync(cancellationToken);
+            return Result.Ok();
+        }
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: "IX_accounts_cpf"
+        })
+        {
+            _failed = true;
+            return Result.Fail(new ConflictError("CPF is already registered."));
         }
         catch
         {
