@@ -8,11 +8,7 @@
 
 Requisitos: SDK .NET 8, Docker e Docker Compose.
 
-```bash
-cp -n .env.example .env
-```
-
-Ajuste as credenciais e connection strings no `.env`. Na raiz do projeto, usando Bash:
+Na raiz do projeto, usando Bash:
 
 ```bash
 set -a
