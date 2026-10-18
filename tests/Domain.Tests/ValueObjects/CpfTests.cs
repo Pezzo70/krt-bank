@@ -4,9 +4,9 @@ namespace Domain.Tests.ValueObjects;
 
 public class CpfTests
 {
-    // CPFs fictícios de homologação publicados pelo Serpro:
-    // https://documentacao-sigap-rec.ni.estaleiro.serpro.gov.br/documentacao_api_impedidos/#entrada
-    // Contrato esperado: Cpf.Create(string) é uma fábrica estática.
+    // Fictitious test CPFs published by Serpro:
+    // https://documentacao-sigap-rec.ni.estaleiro.serpro.gov.br/documentacao_api_impedidos/#input
+    // Expected contract: Cpf.Create(string) is a static factory.
 
     [Theory]
     [InlineData("28784142090")]
@@ -14,13 +14,13 @@ public class CpfTests
     [InlineData("08940473965")]
     [InlineData("51077358008")]
     [InlineData("62564939074")]
-    public void Create_DeveCriarCpfValidoSemMascara(string valor)
+    public void Create_ShouldAcceptValidUnmaskedCpf(string value)
     {
-        var resultado = Cpf.Create(valor);
+        var result = Cpf.Create(value);
 
-        Assert.True(resultado.IsSuccess);
-        Assert.NotNull(resultado.Value);
-        Assert.Equal(valor, resultado.Value.Value);
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
+        Assert.Equal(value, result.Value.Value);
     }
 
     [Theory]
@@ -29,13 +29,13 @@ public class CpfTests
     [InlineData("510.773.580-08", "51077358008")]
     [InlineData(" 287.841.420-90 ", "28784142090")]
     [InlineData("\t08782758000\r\n", "08782758000")]
-    public void Create_DeveNormalizarCpfValido(string entrada, string esperado)
+    public void Create_ShouldNormalizeValidCpf(string input, string expected)
     {
-        var resultado = Cpf.Create(entrada);
+        var result = Cpf.Create(input);
 
-        Assert.True(resultado.IsSuccess);
-        Assert.NotNull(resultado.Value);
-        Assert.Equal(esperado, resultado.Value.Value);
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
+        Assert.Equal(expected, result.Value.Value);
     }
 
     [Theory]
@@ -44,9 +44,9 @@ public class CpfTests
     [InlineData(" ")]
     [InlineData("\t")]
     [InlineData("\n")]
-    public void Create_DeveRejeitarValorNuloOuEmBranco(string? valor)
+    public void Create_ShouldRejectNullOrWhitespace(string? value)
     {
-        AssertCpfInvalido(valor);
+        AssertInvalidCpf(value);
     }
 
     [Theory]
@@ -55,9 +55,9 @@ public class CpfTests
     [InlineData("2878414209")]
     [InlineData("287841420900")]
     [InlineData("287.841.420-9")]
-    public void Create_DeveRejeitarQuantidadeDeDigitosInvalida(string valor)
+    public void Create_ShouldRejectInvalidLength(string value)
     {
-        AssertCpfInvalido(valor);
+        AssertInvalidCpf(value);
     }
 
     [Theory]
@@ -66,9 +66,9 @@ public class CpfTests
     [InlineData("A28784142090")]
     [InlineData("28784142090A")]
     [InlineData("287.841.420-90A")]
-    public void Create_DeveRejeitarLetras(string valor)
+    public void Create_ShouldRejectLetters(string value)
     {
-        AssertCpfInvalido(valor);
+        AssertInvalidCpf(value);
     }
 
     [Theory]
@@ -77,9 +77,9 @@ public class CpfTests
     [InlineData("28784142090.")]
     [InlineData("287.841420-90")]
     [InlineData("287 841 420 90")]
-    public void Create_DeveRejeitarMascaraInvalida(string valor)
+    public void Create_ShouldRejectInvalidMask(string value)
     {
-        AssertCpfInvalido(valor);
+        AssertInvalidCpf(value);
     }
 
     [Theory]
@@ -94,79 +94,79 @@ public class CpfTests
     [InlineData("88888888888")]
     [InlineData("99999999999")]
     [InlineData("111.111.111-11")]
-    public void Create_DeveRejeitarDigitosTodosIguais(string valor)
+    public void Create_ShouldRejectRepeatedDigits(string value)
     {
-        AssertCpfInvalido(valor);
+        AssertInvalidCpf(value);
     }
 
     [Theory]
-    // O segundo dígito foi recalculado para o primeiro dígito incorreto.
-    // Isso verifica a rejeição do primeiro verificador independentemente do segundo.
+    // The second check digit was recalculated for the incorrect first check digit.
+    // This tests rejection of the first check digit independently of the second.
     [InlineData("28784142081")]
     [InlineData("62564939066")]
-    public void Create_DeveRejeitarPrimeiroDigitoVerificadorInvalido(string valor)
+    public void Create_ShouldRejectInvalidFirstCheckDigit(string value)
     {
-        AssertCpfInvalido(valor);
+        AssertInvalidCpf(value);
     }
 
     [Theory]
     [InlineData("28784142091")]
     [InlineData("08782758001")]
     [InlineData("62564939075")]
-    public void Create_DeveRejeitarSegundoDigitoVerificadorInvalido(string valor)
+    public void Create_ShouldRejectInvalidSecondCheckDigit(string value)
     {
-        AssertCpfInvalido(valor);
+        AssertInvalidCpf(value);
     }
 
     [Fact]
-    public void DeveConsiderarIguaisCpfsComMesmoNumeroNormalizado()
+    public void Equality_ShouldMatchNormalizedValues()
     {
-        var primeiro = CriarCpfValido("28784142090");
-        var segundo = CriarCpfValido("287.841.420-90");
+        var first = CreateValidCpf("28784142090");
+        var second = CreateValidCpf("287.841.420-90");
 
-        Assert.Equal(primeiro, segundo);
-        Assert.True(primeiro == segundo);
+        Assert.Equal(first, second);
+        Assert.True(first == second);
     }
 
     [Fact]
-    public void DeveConsiderarDiferentesCpfsComNumerosDiferentes()
+    public void Equality_ShouldDistinguishDifferentValues()
     {
-        var primeiro = CriarCpfValido("28784142090");
-        var segundo = CriarCpfValido("62564939074");
+        var first = CreateValidCpf("28784142090");
+        var second = CreateValidCpf("62564939074");
 
-        Assert.NotEqual(primeiro, segundo);
-        Assert.False(primeiro == segundo);
+        Assert.NotEqual(first, second);
+        Assert.False(first == second);
     }
 
     [Fact]
-    public void DeveReconhecerMesmoCpfEmHashSet()
+    public void HashSet_ShouldDeduplicateEquivalentCpfs()
     {
-        var primeiro = CriarCpfValido("28784142090");
-        var segundo = CriarCpfValido("287.841.420-90");
+        var first = CreateValidCpf("28784142090");
+        var second = CreateValidCpf("287.841.420-90");
 
-        var cpfs = new HashSet<Cpf> { primeiro, segundo };
+        var cpfs = new HashSet<Cpf> { first, second };
 
         Assert.Single(cpfs);
     }
 
-    private static Cpf CriarCpfValido(string valor)
+    private static Cpf CreateValidCpf(string value)
     {
-        var resultado = Cpf.Create(valor);
+        var result = Cpf.Create(value);
 
-        Assert.True(resultado.IsSuccess);
-        Assert.NotNull(resultado.Value);
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
 
-        return resultado.Value;
+        return result.Value;
     }
 
-    private static void AssertCpfInvalido(string? valor)
+    private static void AssertInvalidCpf(string? value)
     {
-        // null é deliberado para verificar a entrada em tempo de execução.
-        var resultado = Cpf.Create(valor!);
+        // Null is intentional to verify runtime input handling.
+        var result = Cpf.Create(value!);
 
-        Assert.True(resultado.IsFailed);
-        Assert.NotEmpty(resultado.Errors);
-        Assert.All(resultado.Errors, erro =>
-            Assert.False(string.IsNullOrWhiteSpace(erro.Message)));
+        Assert.True(result.IsFailed);
+        Assert.NotEmpty(result.Errors);
+        Assert.All(result.Errors, error =>
+            Assert.False(string.IsNullOrWhiteSpace(error.Message)));
     }
 }

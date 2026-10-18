@@ -1,23 +1,24 @@
 # krt-bank
 
-Solution C# em .NET 8 com domínio de contas e Infrastructure usando PostgreSQL, Entity Framework Core e ReadySet.
+.NET 8 banking domain with PostgreSQL, Entity Framework Core, a transactional Outbox and ReadySet.
 
-## Projetos
+## Projects
 
-- `Domain`: conta, entidade base, CPF e contratos de persistência/consulta.
-- `Infrastructure`: contexto EF, migrations, repositório, Unit of Work, Outbox e consultas pelo ReadySet.
-- `Domain.Tests`: testes do CPF.
-- `Infrastructure.Tests`: integração com PostgreSQL e ReadySet reais em containers descartáveis.
+- `Domain`: Account, Entity, CPF value object, Outbox message/payload definitions and persistence/query interfaces.
+- `Infra`: EF contexts, migrations, repositories, Unit of Work, Outbox serialization/persistence and ReadySet queries.
+- `Domain.Tests`: existing CPF unit tests.
+- `Infra.Tests`: integration tests against disposable PostgreSQL and ReadySet containers.
+- `ReadySet.Setup`: a small C# host that runs the same automatic cache initialization as the future API host.
 
-## Ambiente local
+## Local setup
 
-Requer SDK .NET 8 (versão em `global.json`) e Docker com Compose. Na raiz, em Bash:
+Requires the .NET 8 SDK pinned in `global.json`, Docker, Compose and the PostgreSQL client (`psql`) installed alongside the C# host. The application invokes `psql` directly, without Bash or Docker commands. On Ubuntu, the client is available in `postgresql-client-16`. From the repository root in Bash:
 
 ```bash
 cp -n .env.example .env
 ```
 
-Ajuste `.env` antes de iniciar. Os valores do exemplo são para desenvolvimento local. Ao alterar banco, usuário, senha ou portas, ajuste também as duas connection strings. O `.env` é ignorado pelo Git.
+Update `.env` before starting. Example credentials are for local development. If database credentials or ports change, update both connection strings. `.env` is ignored by Git.
 
 ```bash
 set -a
@@ -27,116 +28,131 @@ set +a
 dotnet tool restore
 dotnet restore KrtBanking.sln
 docker compose up -d --wait postgres
-dotnet ef database update --project src/Infrastructure --startup-project src/Infrastructure
+dotnet ef database update --context BankDbContext --project src/Infra --startup-project src/Infra
 docker compose up -d readyset
-bash scripts/prepare-readyset.sh
+dotnet run --project tools/ReadySet.Setup
 ```
 
-A migration deve ser aplicada antes de preparar o cache. O script espera o snapshot inicial e registra a consulta por GUID apenas se ela ainda não existir; pode ser executado novamente. A conta PostgreSQL do Compose possui as permissões locais necessárias à replicação e ao acompanhamento de DDL. Credenciais com caracteres reservados de URL exigem codificação no `UPSTREAM_DB_URL` do ReadySet.
+Apply migrations before starting a host that uses Infra. `AddInfra()` registers an `IHostedService` that waits for ReadySet replication and registers the caches from C# definitions. No Bash setup script is required. The setup tool runs that same hosted service; when an API host is added, starting the API will run it automatically. URL-reserved characters in credentials must be encoded in ReadySet's `UPSTREAM_DB_URL`.
 
-Portas locais padrão: PostgreSQL `5432`, ReadySet `5433`, métricas do ReadySet `6034`. São configuráveis pelo `.env`. Os dados ficam em volumes Docker. PostgreSQL 16 e ReadySet `stable-260924` são as imagens utilizadas.
+Default ports: PostgreSQL `5432`, ReadySet `5433`, ReadySet metrics `6034`. Override them in `.env`. Data uses Docker volumes. Images are PostgreSQL 16 and ReadySet `stable-260924`.
 
-## Registro e uso
+The account rename migration preserves existing rows and identifiers by renaming the table, column and indexes. Earlier migrations retain their original names and schema so existing databases can upgrade. Previously stored Outbox messages retain their historical payloads and event types.
 
-O futuro host carrega a configuração e registra:
+## Registration and usage
+
+The future application host loads configuration and registers:
 
 ```csharp
-services.AddInfrastructure(configuration);
+services.AddInfra(configuration);
 ```
 
-São exigidas `ConnectionStrings:Postgres` e `ConnectionStrings:ReadySet`, equivalentes às variáveis `ConnectionStrings__Postgres` e `ConnectionStrings__ReadySet` do exemplo. Repositório, contexto e Unit of Work compartilham o mesmo escopo.
+Both `ConnectionStrings:Postgres` and `ConnectionStrings:ReadySet` are required. Environment variable equivalents are included in `.env.example`. The repository, primary context and Unit of Work share a service scope.
 
 ```csharp
-var conta = new Conta { Nome = "Conta exemplo", Cpf = cpfValidado };
-contaRepository.Add(conta);
+var account = new Account { Name = "Example account", Cpf = validatedCpf };
+accountRepository.Add(account);
 await unitOfWork.CommitAsync(cancellationToken);
 
-// Carrega uma entidade rastreada diretamente no PostgreSQL para alterar.
-var existente = await contaRepository.GetByIdAsync(conta.Id, cancellationToken);
-if (existente is not null)
+var existing = await accountRepository.GetByIdAsync(account.Id, cancellationToken);
+if (existing is not null)
 {
-    existente.Nome = "Novo nome";
+    existing.Name = "Updated name";
     await unitOfWork.CommitAsync(cancellationToken);
 }
 
-// Retorna um modelo imutável de consulta pelo ReadySet.
-var consulta = await contaQueries.GetByIdAsync(conta.Id, cancellationToken);
+var result = await accountQueries.GetByIdAsync(account.Id, cancellationToken);
 ```
 
-`Cpf.Create()` retorna `Result<Cpf>`: valide o resultado antes de construir a conta. `required` exige inicialização no C#, mas não valida nome vazio. Validação da entrada e tradução de erros de banco para respostas HTTP pertencem à camada de aplicação/API futura.
+`Cpf.Create()` returns `Result<Cpf>`; check success before constructing the account. `required` enforces C# initialization but does not validate empty names. Input validation and database error translation belong in the future application/API layer.
 
-## Persistência e Outbox
+## Persistence and Outbox
 
-- `InternalId`: chave primária inteira, gerada pelo PostgreSQL.
-- `Id`: GUID do domínio com índice único.
-- CPF normalizado: obrigatório, com até 11 caracteres e único, incluindo contas inativas.
-- Datas: UTC (`timestamptz`); `UpdatedAt` é preenchido no commit de alterações.
-- `Remove(conta)` faz exclusão lógica. O registro e o CPF são preservados; as consultas normais ocultam contas inativas.
+- `InternalId`: PostgreSQL-generated integer primary key.
+- `Id`: domain GUID with a unique index.
+- Normalized CPF: required, unique across active and inactive accounts.
+- Timestamps: UTC (`timestamptz`); updates set `UpdatedAt` on commit.
+- `Remove(account)`: soft deletion. The row and CPF remain reserved; normal queries hide inactive accounts.
 
-Os repositórios apenas registram alterações. As gravações de negócio passam por `IUnitOfWork.CommitAsync()`, que detecta as entidades alteradas em uma única iteração e salva os dados e as mensagens da Outbox na mesma transação. Depois de uma falha, descarte a operação e seu contexto; uma segunda tentativa na mesma Unit of Work é rejeitada.
+Repositories stage changes. Business writes go through `IUnitOfWork.CommitAsync()`, which inspects tracked entities in one loop and saves changes and Outbox messages in one transaction. After failure, discard the Unit of Work and context; reuse is rejected.
 
-Inclusões geram `conta.criada`; alterações geram `conta.atualizada`; a transição de ativa para inativa gera `conta.excluida`. Um commit sem mudanças não cria mensagens. A factory recebe mapeadores registrados por tipo; uma nova entidade precisa do seu mapeador e configuração EF, mantendo o processamento comum.
+New events are `account.created`, `account.updated` and `account.deleted`. A commit without changes creates no messages. Each entity type registers its EF configuration and Outbox payload mapper. The Outbox message, factory/mapper interfaces and typed account payload are defined in Domain. Infra implements the factory (JSON serialization), EF mapping and transactional persistence.
 
-`outbox_messages` contém `event_id`, `entity_id` (GUID da conta), `type`, `occurred_at`, `payload` JSON e `published_at`. O payload usa camelCase e contém `contaId`, `nome`, `cpf`, `isActive`, `createdAt` e `updatedAt`, sem expor `InternalId`.
+`OutboxMessage` inherits `Entity`, using its `Id`, `InternalId`, `IsActive`, `CreatedAt` and `UpdatedAt`. The migration renames `event_id` to `id` and `occurred_at` to `created_at`, preserving existing identifiers and timestamps and keeping existing messages active. `outbox_messages` also stores `entity_id`, `type`, JSON `payload` and `published_at`. Account payload fields are `accountId`, `name`, `cpf`, `isActive`, `createdAt` and `updatedAt`; `InternalId` is excluded.
 
-`published_at` permanece nulo nesta etapa: broker e processo de publicação ficam para a próxima implementação. Operações SQL diretas e atualizações em lote que ignoram o ChangeTracker também ignoram a criação de notificações.
+Changes to Outbox messages do not generate further Outbox messages. `published_at` remains null until a future publisher is implemented. Operations that bypass EF change tracking also bypass Outbox creation.
 
-## ReadySet
+## ReadySet and Entity Framework Core
 
-`IContaRepository` usa diretamente o PostgreSQL. `IContaQueries` usa SQL parametrizado pelo ReadySet e retorna `ContaConsulta`, sem rastreamento.
+`IAccountRepository` uses the PostgreSQL `BankDbContext`. `IAccountQueries` uses LINQ through `ReadySetDbContext`, returning `Account` with `AsNoTracking()`. The same query runs without tracking when falling back to PostgreSQL. EF Core and Npgsql generate and parameterize the SQL. The initializer derives the cache definition from that same LINQ expression.
 
-O **deep cache** da consulta de contas ativas por GUID recebe alterações por replicação lógica somente de `public.contas`. Há um pequeno atraso entre gravar no PostgreSQL e refletir a alteração no cache; não se mantém uma cópia congelada por 24 horas.
+The deep cache replicates `public.accounts` through PostgreSQL logical replication. Changes appear asynchronously; reads requiring immediate consistency should use the primary repository.
 
-Falhas transitórias de conexão ou timeout do ReadySet geram um aviso e fallback para a mesma consulta no PostgreSQL. Resultado nulo e cancelamento solicitado não acionam fallback. Leituras que exigem dados imediatamente atualizados devem usar o PostgreSQL, como ocorre no repositório de edição.
+Transient connection failures and timeouts trigger a warning and run the same LINQ query through the primary context. A missing cached row and caller cancellation do not trigger fallback.
 
-### Inspecionar contas e Outbox
+Cache definitions live in Infra and use the shared query expression:
 
-```bash
-docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```csharp
+services.AddReadySetCache<Account>(
+    "accounts_by_id",
+    (context, id) => AccountReadQuery.ById(context.Accounts, id));
 ```
 
-```sql
-SELECT internal_id, id, nome, cpf, is_active, created_at, updated_at FROM contas;
-SELECT event_id, type, entity_id, payload, published_at FROM outbox_messages ORDER BY occurred_at;
+This registration is already included in `AddInfra()`. `AddReadySetCache` is our extension, not a built-in EF feature. `Guid.Empty` is used internally only to generate EF parameter metadata; it does not restrict the cache to that GUID. Actual reads supply their own ID.
+
+On host startup, `ReadySetCacheInitializer`:
+
+1. Waits until ReadySet reports running replication.
+2. Generates the parameterized query through EF Core.
+3. Computes a stable query version and checks for `accounts_by_id_<version>`.
+4. Creates the deep cache only if that version is missing.
+
+Repeated starts reuse the same cache. Changed query SQL produces a different version, preserving the caches used by older application instances. Concurrent starts tolerate another instance registering the same version. Old versions are not deleted automatically.
+
+The startup wait defaults to 120 seconds. If ReadySet remains unavailable, the initializer logs a warning and permits the host to start; reads can still use PostgreSQL. Initialization is retried during that wait and again on a later startup. Caller cancellation is propagated. Missing `psql` fails startup with a configuration error.
+
+Optional configuration:
+
+```text
+ReadySet__PsqlPath=psql
+ReadySet__StartupTimeoutSeconds=120
 ```
 
-### Confirmar uso do cache
+`PsqlPath` can be an absolute executable path. Production images must include the PostgreSQL client. Credentials are passed through the child process environment and commands through standard input, without a shell. Only cache administration uses `psql`; business reads and writes remain EF Core queries. This is needed because the pinned ReadySet version rejected these administrative commands through Npgsql's extended protocol.
+
+For manual inspection:
 
 ```bash
 docker compose exec postgres sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h readyset -p 5433 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
-Na mesma sessão, substitua o GUID por uma conta existente:
-
 ```sql
 SHOW READYSET STATUS;
 SHOW CACHES;
-SELECT id, nome, cpf, is_active, created_at, updated_at
-FROM public.contas
-WHERE id = '00000000-0000-0000-0000-000000000000' AND is_active = TRUE;
-EXPLAIN LAST STATEMENT;
 ```
 
-`Query_destination = readyset(contas_por_id)` confirma atendimento pelo deep cache na versão fixada. `upstream` indica encaminhamento ao PostgreSQL. Os comandos administrativos são executados pelo `psql`, usando o protocolo simples; a aplicação usa Npgsql para o SELECT parametrizado. Métricas: `http://localhost:6034/metrics`, na porta configurada.
+The integration suite verifies `readyset(accounts_by_id_<version>)` using `EXPLAIN LAST STATEMENT` after executing an EF-generated query. It also reads through the EF context with an unavailable origin to confirm cache usage.
+
+Metrics: `http://localhost:6034/metrics` using the configured port.
 
 ```bash
 docker compose logs --tail 100 readyset
 docker compose down
 ```
 
-`down` preserva os volumes. A configuração acima é local; migrations e replicação em serviços gerenciados precisam de configuração de implantação própria.
+`down` preserves volumes. Production migrations and replication permissions require deployment-specific configuration. If upgrading an existing local ReadySet deployment, starting a host registers the current version automatically. Legacy caches are left intact and are no longer used when their query shape differs.
 
-## Testes
+## Tests
 
 ```bash
 dotnet test KrtBanking.sln
 ```
 
-Os testes de integração iniciam PostgreSQL e ReadySet em rede isolada, aplicam migrations e descartam os containers ao terminar. Não usam o banco do `.env`. O Docker precisa estar acessível ao processo dos testes.
+Integration tests start isolated PostgreSQL and ReadySet containers, apply migrations and remove containers on completion. They never use the `.env` database. Docker and `psql` must be accessible to the test process. Set `ReadySet__PsqlPath` if the client is not on PATH. The fixture starts a real C# host to register caches, exercising the production initializer.
 
-A suíte verifica materialização de identidades/CPF/datas, alterações, exclusão lógica, CPF reservado, múltiplas contas, atomicidade da Outbox, commits sem alterações, cache real, replicação e fallback. Os testes do CPF são mantidos; não há novos testes unitários da `Entity`.
+Coverage includes identifiers, CPF and timestamp materialization, updates, soft deletion, CPF uniqueness, batch persistence, Outbox atomicity, unchanged commits, actual cache usage, replication, fallback, automatic host initialization, query version changes, repeated startup and cancellation.
 
-Para executar somente os testes de domínio:
+Domain tests only:
 
 ```bash
 dotnet test tests/Domain.Tests

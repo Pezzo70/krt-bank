@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-krt_bank}
       POSTGRES_USER: ${POSTGRES_USER:-krt_bank}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       TZ: UTC
     command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10", "-c", "timezone=UTC"]
     ports:
@@ -23,7 +23,7 @@ services:
     image: readysettech/readyset:stable-260924
     environment:
       UPSTREAM_DB_URL: postgres://${POSTGRES_USER:-krt_bank}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-krt_bank}
-      REPLICATION_TABLES: public.contas
+      REPLICATION_TABLES: public.accounts
       CACHE_MODE: deep
       QUERY_CACHING: explicit
       LISTEN_ADDRESS: 0.0.0.0:5433

@@ -16,27 +16,27 @@ public sealed record Cpf
     {
         if (string.IsNullOrWhiteSpace(cpf))
         {
-            return Result.Fail<string>("O CPF é obrigatório.");
+            return Result.Fail<string>("CPF is required.");
         }
 
         var input = cpf.Trim();
 
         if (!Regex.IsMatch(input, @"\A(?:[0-9]{11}|[0-9]{3}\.[0-9]{3}\.[0-9]{3}-[0-9]{2})\z"))
         {
-            return Result.Fail<string>("O CPF deve conter 11 dígitos, com ou sem a máscara padrão.");
+            return Result.Fail<string>("CPF must contain 11 digits, with or without the standard mask.");
         }
 
         var value = input.Replace(".", string.Empty).Replace("-", string.Empty);
 
         if (value.All(digit => digit == value[0]))
         {
-            return Result.Fail<string>("O CPF não pode ter todos os dígitos iguais.");
+            return Result.Fail<string>("CPF cannot contain only repeated digits.");
         }
 
         if (CalculateCheckDigit(value.AsSpan(0, 9)) != value[9] - '0' ||
             CalculateCheckDigit(value.AsSpan(0, 10)) != value[10] - '0')
         {
-            return Result.Fail<string>("Os dígitos verificadores do CPF são inválidos.");
+            return Result.Fail<string>("CPF check digits are invalid.");
         }
 
         return Result.Ok(value);
